@@ -1,0 +1,134 @@
+test_pod:
+  enabled: true
+  image: bats/bats:1.8.2
+  pullPolicy: IfNotPresent
+
+loki:
+  enabled: true
+  isDefault: true
+  url: http://{{(include "loki.serviceName" .)}}:{{ .Values.loki.service.port }}
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: http-metrics
+    initialDelaySeconds: 45
+  livenessProbe:
+    httpGet:
+      path: /ready
+      port: http-metrics
+    initialDelaySeconds: 45
+  datasource:
+    jsonData: "{}"
+    uid: ""
+
+
+promtail:
+  enabled: true
+  config:
+    logLevel: info
+    serverPort: 3101
+    clients:
+      - url: http://{{ .Release.Name }}:3100/loki/api/v1/push
+
+fluent-bit:
+  enabled: false
+
+grafana:
+  enabled: true
+  service:
+    type: NodePort
+    nodePort: 32000
+  sidecar:
+    datasources:
+      label: ""
+      labelValue: ""
+      enabled: true
+      maxLines: 1000
+  image:
+    tag: latest
+
+  grafana.ini:
+    auth.generic_oauth:
+      enabled: true
+      name: Keycloak
+      allow_sign_up: true
+      client_id: grafana
+      client_secret: "awwI4m5Utp6PIRX1ZpKOkzXGQd2KpTrH"
+      #client_secret: "VeIMTYChGCj4OpUuDFxbB9LxnlhpthMo"
+      #client_secret: "by50Lgy1kGiKeWMEyKPec8GatL4z12u1"
+      scopes: openid profile email # openid email profile
+      email_attribute_path: email
+      login_attribute_path: username
+      name_attribute_path: full_name
+      auth_url: http://192.168.195.150:8081/realms/grafana-realm/protocol/openid-connect/auth
+      token_url: http://192.168.195.150:8081/realms/grafana-realm/protocol/openid-connect/token
+      api_url: http://192.168.195.150:8081/realms/grafana-realm/protocol/openid-connect/userinfo
+      role_attribute_path: contains(resource_access.grafana.roles[], 'admin') && 'Admin' || contains(resource_access.grafana.roles[], 'editor') && 'Editor' || (contains(grafana.roles[], 'viewer') && 'Viewer')
+    server:
+      root_url: http://192.168.195.140:32000/
+prometheus:
+  enabled: false
+  isDefault: false
+  url: http://{{ include "prometheus.fullname" .}}:{{ .Values.prometheus.server.service.servicePort }}{{ .Values.prometheus.server.prefixURL }}
+  datasource:
+    jsonData: "{}"
+
+filebeat:
+  enabled: false
+  filebeatConfig:
+    filebeat.yml: |
+      # logging.level: debug
+      filebeat.inputs:
+      - type: container
+        paths:
+          - /var/log/containers/*.log
+        processors:
+        - add_kubernetes_metadata:
+            host: ${NODE_NAME}
+            matchers:
+            - logs_path:
+                logs_path: "/var/log/containers/"
+      output.logstash:
+        hosts: ["logstash-loki:5044"]
+
+logstash:
+  enabled: false
+  image: grafana/logstash-output-loki
+  imageTag: 1.0.1
+  filters:
+    main: |-
+      filter {
+        if [kubernetes] {
+          mutate {
+            add_field => {
+              "container_name" => "%{[kubernetes][container][name]}"
+              "namespace" => "%{[kubernetes][namespace]}"
+              "pod" => "%{[kubernetes][pod][name]}"
+            }
+            replace => { "host" => "%{[kubernetes][node][name]}"}
+          }
+        }
+        mutate {
+          remove_field => ["tags"]
+        }
+      }
+  outputs:
+    main: |-
+      output {
+        loki {
+          url => "http://loki:3100/loki/api/v1/push"
+          #username => "test"
+          #password => "test"
+        }
+        # stdout { codec => rubydebug }
+      }
+
+# proxy is currently only used by loki test pod
+# Note: If http_proxy/https_proxy are set, then no_proxy should include the
+# loki service name, so that tests are able to communicate with the loki
+# service.
+proxy:
+  http_proxy: ""
+  https_proxy: ""
+  no_proxy: ""
+
